@@ -1,0 +1,528 @@
+from __future__ import division
+
+# For the matrix math
+import numpy as np
+# For data manipulation
+import pandas as pd
+# For rendering the plots
+import matplotlib.pyplot as plt
+import pylab as pl
+# For shuffling, folding and splitting the train and test data
+from sklearn import cross_validation
+from sklearn import preprocessing
+# For calculating performance metrics
+from sklearn.metrics import confusion_matrix, accuracy_score, zero_one_loss
+# For classifying verification metrics
+from sklearn.neighbors import KNeighborsClassifier
+# import warnings
+# warnings.filterwarnings("ignore")
+#%config InlineBackend.figure_format='svg'
+
+
+import numbers
+import itertools
+from abc import ABCMeta, abstractmethod
+from sklearn.base import ClassifierMixin, BaseEstimator
+# Six provides simple utilities for wrapping over differences between Python 2 and Python 3
+from sklearn.externals import six
+from sklearn.externals.six.moves import xrange
+from sklearn.feature_selection.from_model import _LearntSelectorMixin
+from sklearn.tree._tree import DTYPE, DOUBLE
+from sklearn.utils import array2d, check_random_state, check_arrays, safe_asarray, column_or_1d
+from sklearn.utils.fixes import bincount, unique
+from sklearn.tree._tree import Tree, Entropy, BestSplitter
+from sklearn.ensemble.base import BaseEnsemble
+
+from sklearn.cross_validation import StratifiedShuffleSplit
+
+
+class myDecisionTreeClassifier(six.with_metaclass(ABCMeta, BaseEstimator, _LearntSelectorMixin, ClassifierMixin)):
+    
+    def __init__(self,
+                 # Max depth for Decision Tree
+                 max_depth=None,
+                 # Min number of samples per split
+                 min_samples_split=2,
+                 # Min samples per leaf node
+                 min_samples_leaf=1,
+                 # Max number of features to consider when looking for the best split
+                 max_features=None,
+                 # Init the random state of the tree
+                 random_state=None):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.max_features = max_features
+        self.random_state = random_state
+        # We'll waint until we fit to inti these:
+        # Learning criterion for training tree
+        self.criterion = None
+        # Split method
+        self.splitter = None
+        # Number of features
+        self.n_features_ = None
+        # Number of outputs
+        self.n_outputs_ = None
+        # Labels of classes
+        self.classes_ = None
+        # Number of classes
+        self.n_classes_ = None
+        # Tree dataframe
+        self.tree_ = None
+            
+    def fit(self, X, y, check_input=True, sample_weight=None):
+        # Poll the randome state from the tree
+        random_state = check_random_state(self.random_state)
+        # If the data hasn't yet been formated
+        if check_input:
+            # Then convert the X data
+            X, = check_arrays(X, dtype=DTYPE, sparse_format="dense", check_ccontiguous=True)
+        # Get the dimentions of X
+        n_samples, self.n_features_ = X.shape
+        # Make sure that y is a 1d and not a id.T
+        y = np.atleast_1d(y)
+        # If our output is 1d
+        if y.ndim == 1:
+            # Reshape y to preserve the data contiguity
+            y = np.reshape(y, (-1, 1))
+        # Get the number of outputs
+        self.n_outputs_ = y.shape[1]
+        y = np.copy(y)
+        # Make a container for all unique classes
+        self.classes_ = []
+        # Make a container for number of instances of each unique classe
+        self.n_classes_ = []
+        # For each output of y
+        for k in xrange(self.n_outputs_):
+            # Get the unique classe lables and an array of indexs pointing to the lable
+            classes_k, y[:, k] = unique(y[:, k], return_inverse=True)
+            # Store the unique classe lables
+            self.classes_.append(classes_k)
+            # And store the unique classe lables' length
+            self.n_classes_.append(classes_k.shape[0])
+        # Lets make this numpy array type ints for speed
+        self.n_classes_ = np.array(self.n_classes_, dtype=np.intp)
+        if getattr(y, "dtype", None) != DOUBLE or not y.flags.contiguous:
+            y = np.ascontiguousarray(y, dtype=DOUBLE)
+        # Check parameters
+        # If no maxdepth was given
+        max_depth = (2 ** 31) - 1 if self.max_depth is None else self.max_depth
+        # If defult was given 
+        if isinstance(self.max_features, six.string_types):
+            # then set it to the sqrt of number of features 
+            max_features = max(1, int(np.sqrt(self.n_features_)))
+        # If None was given 
+        elif self.max_features is None:
+            # Just use all of them
+            max_features = self.n_features_
+        # Otherwise
+        else:
+            # Use whats given
+            max_features = self.max_features
+        # We we we're given a sample weight
+        if sample_weight is not None:
+            # Then  we'll nedd to make sure its double precision
+            if (getattr(sample_weight, "dtype", None) != DOUBLE or not sample_weight.flags.contiguous):
+                sample_weight = np.ascontiguousarray(sample_weight, dtype=DOUBLE)
+        min_samples_split = self.min_samples_split
+        criterion = self.criterion
+        # If we have not yet inti our tree criterion
+        if criterion is None:
+            # Lets inti our entropy criterion
+            criterion = Entropy(self.n_outputs_, self.n_classes_)
+        splitter = self.splitter
+        # If we have not yet inti our tree splitter
+        if splitter is None:
+            # Lets inti our best binary splitter
+            splitter = BestSplitter(criterion, max_features, self.min_samples_leaf, random_state)
+        # We'll save these so we don't have to init them agian a second time for retraining
+        self.criterion_ = criterion
+        self.splitter_ = splitter
+        # Now lets init
+        self.tree_ = Tree(self.n_features_, self.n_classes_, self.n_outputs_, splitter, max_depth, min_samples_split, self.min_samples_leaf, random_state)
+        # and fit our tree database
+        self.tree_.build(X, y, sample_weight=sample_weight)
+        # If we only have one output
+        if self.n_outputs_ == 1:
+            # Then just save the first class
+            self.n_classes_ = self.n_classes_[0]
+            self.classes_ = self.classes_[0]
+        # Then save our tree
+        return self
+
+    def predict(self, X):
+        """Predict class for a given X"""
+        # Make sure the data is DTYPE for the tree and is 2D
+        if getattr(X, "dtype", None) != DTYPE or X.ndim != 2:
+            X = array2d(X, dtype=DTYPE)
+        # Get the dimentions of X
+        n_samples, n_features = X.shape
+        # Predict class from tree database
+        proba = self.tree_.predict(X)
+        # If we only have one output
+        if self.n_outputs_ == 1:
+            # Then use the index of the max prob to pick the class from classes_
+            return self.classes_.take(np.argmax(proba, axis=1), axis=0)
+        # If we were trained with multiple outputs
+        else:
+            # Make a empty 2D array to hold predictions
+            predictions = np.zeros((n_samples, self.n_outputs_))
+            # For each output
+            for k in xrange(self.n_outputs_):
+                # Then use the index of the max prob to pick the class from classes_
+                predictions[:, k] = self.classes_[k].take(np.argmax(proba[:, k], axis=1), axis=0)
+            # Return the results
+            return predictions
+
+    def predict_proba(self, X):
+        """Predict class probabilities from the given X"""
+        # Make sure the data is DTYPE for the tree and is 2D
+        if getattr(X, "dtype", None) != DTYPE or X.ndim != 2:
+            X = array2d(X, dtype=DTYPE)
+        # Get the dimentions of X
+        n_samples, n_features = X.shape
+        # Predict class from tree database
+        proba = self.tree_.predict(X)
+        # If we only have one output
+        if self.n_outputs_ == 1:
+            # Grab the predictions for the avalable classes
+            proba = proba[:, :self.n_classes_]
+            # Generate a normalizer from all the proba weights
+            normalizer = proba.sum(axis=1)[:, np.newaxis]
+            # Remap all of the zero normalizer elemnts to one
+            # This is so just we can avoid deviding by zero
+            normalizer[normalizer == 0.0] = 1.0
+            # Now normilize the proba by the total weight sum of each sample
+            proba /= normalizer
+            # Return the results
+            return proba
+        # If we were trained with multiple outputs
+        else:
+            # Make a empty container to hold all proba
+            all_proba = []
+            # For each output
+            for k in xrange(self.n_outputs_):
+                # Grab the predictions for the avalable classes
+                proba_k = proba[:, k, :self.n_classes_[k]]
+                # Generate a normalizer from all the proba weights
+                normalizer = proba_k.sum(axis=1)[:, np.newaxis]
+                # Remap all of the zero normalizer elemnts to one
+                # This is so just we can avoid deviding by zero
+                normalizer[normalizer == 0.0] = 1.0
+                # Now normilize the proba by the total weight sum of each sample
+                proba_k /= normalizer
+                # Return the results
+                all_proba.append(proba_k)
+            # Return the results
+            return all_proba
+
+class myRandomForestClassifier(six.with_metaclass(ABCMeta, BaseEnsemble, _LearntSelectorMixin, ClassifierMixin)):
+    """Random Forest Classifier"""
+    def __init__(self,
+                 # Number of estimators or trees
+                 n_estimators=10,
+                 # Max depth for Decision Tree
+                 max_depth=None,
+                 # Min number of samples per split
+                 min_samples_split=2,
+                 # Min samples per leaf node
+                 min_samples_leaf=1,
+                 # Number of features to consider when looking for the best split
+                 max_features="auto",
+                 # Subsample data to train trees
+                 bootstrap=True,
+                 # Keep the Out-Of-Bag score after fitting
+                 oob_score=False,
+                 # Init the random state of the forest
+                 random_state=None):
+        super(myRandomForestClassifier, self).__init__(
+#             base_estimator=myDecisionTreeClassifier(),
+            base_estimator=DecisionTreeClassifier(),
+            n_estimators=n_estimators,
+            estimator_params=("max_depth", "min_samples_split",
+                              "min_samples_leaf", "max_features", "random_state"))
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.max_features = max_features
+        
+        self.bootstrap = bootstrap
+        self.oob_score = oob_score
+        self.random_state = random_state
+        
+    @property
+    def feature_importances_(self):
+        """Return the feature importances (the higher, the more important the
+           feature).
+
+        Returns
+        -------
+        feature_importances_ : array, shape = [n_features]
+        """
+        if self.estimators_ is None or len(self.estimators_) == 0:
+            raise ValueError("Estimator not fitted, "
+                             "call `fit` before `feature_importances_`.")
+
+        return sum(tree.feature_importances_
+                   for tree in self.estimators_) / self.n_estimators
+
+    def fit(self, X, y, labels=None):
+        """Fit a forest of trees from the training set X and y"""
+        # Poll the randome state from the forest
+        random_state = check_random_state(self.random_state)
+        # Reshape y to preserve the data contiguity
+        y = np.reshape(y, (-1, 1))
+        # Get the dimentions of X
+        n_samples, self.n_features_ = X.shape
+        # Get the number of outputs for morphing y later
+        self.n_outputs_ = y.shape[1]
+        # Make a container for all unique classes
+        self.classes_ = []
+        # Make a container for number of instances of each unique classe
+        self.n_classes_ = []
+        # For each output of y
+        for k in xrange(self.n_outputs_):
+            # Get the unique classe lables and an array of indexs pointing to the lable
+            classes_k, y[:, k] = unique(y[:, k], return_inverse=True)
+            # Store the unique classe lables
+            self.classes_.append(classes_k)
+            # And store the unique classe lables' length
+            self.n_classes_.append(classes_k.shape[0])
+        # Check if we need/can do OOB estimation
+        if not self.bootstrap and self.oob_score:
+            raise ValueError("Can't use OOB estimation " 
+                             "if bootstraping is not enabled")
+        # Precalculate the random seeds for all trees
+        n_trees = self.n_estimators
+        seeds = random_state.randint(MAX_INT, size=n_trees)
+        # Grow the forest given the
+        self.estimators_ = grow_forest(self, X, y, seeds, labels)
+        # Check if we need/can do OOB estimation
+        if self.oob_score:
+            # If so, then do it
+            self.get_oob_score(X, y)
+        # Decapsulate attributes if only have one output to consider
+        if hasattr(self, "classes_") and self.n_outputs_ == 1:
+            self.n_classes_ = self.n_classes_[0]
+            self.classes_ = self.classes_[0]
+        return self
+
+    def predict(self, X):
+        """Predict class for X using the forest"""
+        # Get the number of samples in X
+        n_samples = len(X)
+        # Get the probability of each class for all samples
+        proba =  predict_forest(self, X)
+        # In the specal case of being trained with ouly one output
+        if self.n_outputs_ == 1:
+            # Then use the index of the max prob to pick the class from classes_
+            return self.classes_.take(np.argmax(proba, axis=1), axis=0)
+        # If we were trained with multiple outputs
+        else:
+            # Make a empty 2D array to hold predictions
+            predictions = np.zeros((n_samples, self.n_outputs_))
+            # For each output
+            for k in xrange(self.n_outputs_):
+                # Then use the index of the max prob to pick the class from classes_
+                predictions[:, k] = self.classes_[k].take(np.argmax(proba[k], axis=1), axis=0)
+            # Return the results
+            return predictions
+        
+    def get_oob_score(self, X, y):
+        """Calculate the Out-Of-Bag Score if bootstraping"""
+        # Get a list of the classes
+        classes_ = self.classes_
+        # Get the count of all the classs
+        n_classes_ = self.n_classes_
+        # Get the number of outputs
+        n_samples = y.shape[0]
+        # Init the score to zero
+        oob_score = 0.0
+        # Make a container for all decision function
+        oob_decision_function = []
+        # Make a container for all output predictions
+        predictions = []
+        # For each output
+        for k in xrange(self.n_outputs_):
+            # Make a container for all predictions
+            predictions.append(np.zeros((n_samples, n_classes_[k])))
+        # For each tree in the forest
+        for estimator in self.estimators_:
+            # Make a mask
+            mask = np.ones(n_samples, dtype=np.bool)
+            # Then mask all of the indices that the tree was trained from
+            mask[estimator.indices_] = False
+            # Then ask the tree to predict from only the novel points it's never seen
+            p_estimator = estimator.predict_proba(X[mask, :])
+            # In the specal case of being trained with ouly one output
+            if self.n_outputs_ == 1:
+                # Then set that as the only p_estimator
+                p_estimator = [p_estimator]
+            # Then for each output
+            for k in xrange(self.n_outputs_):
+                # Add the predictions for the current output
+                # But only for the predictions of the novel points
+                predictions[k][mask, :] += p_estimator[k]
+        # For each output
+        for k in xrange(self.n_outputs_):
+            # Normilize the predictions made for each output
+            # by the number of predictions made
+            decision = (predictions[k] / predictions[k].sum(axis=1)[:, np.newaxis])
+            # Then stor this oob_decision function
+            oob_decision_function.append(decision)
+            # Use the majoraty vote to pick the predicted class
+            y_pred = classes_[k].take(np.argmax(predictions[k], axis=1), axis=0)
+            # Get matchs of predictions to real lables
+            matches = y[:, k] == y_pred
+            # And tack on the mean correct the oob score
+            oob_score += np.mean(matches)
+        # In the specal case of being trained with ouly one output
+        if self.n_outputs_ == 1:
+            # Our score is just the first element
+            self.oob_decision_function_ = oob_decision_function[0]
+        # If we were trained with multiple outputs
+        else:
+            # Our score are all element in the container
+            self.oob_decision_function_ = oob_decision_function
+        # Now normilize this score by the number of outputs used to derive it
+        self.oob_score_ = oob_score / self.n_outputs_
+    
+# A constant for random generation
+MAX_INT = np.iinfo(np.int32).max
+
+def grow_forest(forest, X, y, seeds, labels=None):
+    """Grow a forest of random trees"""
+    # Convert data
+    X, = check_arrays(X, dtype=DTYPE, sparse_format="dense")
+    # Make a list container for grown trees
+    n_trees = forest.n_estimators
+    trees = []
+    # For each tree in the forest
+    for i in range(n_trees):
+        # Make a np.random.RandomState instance from the tree's planting seed
+        random_state = check_random_state(seeds[i])
+        # generate a random seed for a branching seed
+        seed = random_state.randint(MAX_INT)
+        # Make a decision tree object
+        tree = forest._make_estimator(append=False)
+        # Init the tree's RandomState instance with generated seed
+        # this will randomize what features the tree will use
+        tree.set_params(random_state=check_random_state(seed))
+        # If we are bootstraping
+        if forest.bootstrap:
+            # If we are given labels
+            if labels is not None:
+                # Then need to bootstrap via labels
+                # We can do this by using StratifiedShuffleSplit
+                # to gain a random sample from each lable
+                sss = cross_validation.StratifiedShuffleSplit(labels, 
+                                             n_iter=1, 
+                                             test_size=np.unique(labels).size, 
+                                             random_state=check_random_state(seed))
+                # Then we'll bootstrap our X and y for the lable samples chosen
+                for train, test in sss:
+                    X_lbs = X[test]
+                    y_lbs = y[test]
+                    break
+                
+                # Then get the number of samples
+                n_samples = X_lbs.shape[0]
+                # To generate a uniform sample weight
+                curr_sample_weight = np.ones((n_samples,), dtype=np.float64)
+                # Then randomly choses n_samples from all samples with replacement 
+                indices = random_state.randint(0, n_samples, n_samples)
+                # Use this method of bincount to make a randome benning histogram
+                # that will sum up to n_samples
+                sample_counts = bincount(indices, minlength=n_samples)
+                # Apply these randomized counts to the old uniform weights
+                curr_sample_weight *= sample_counts
+                # Fit the tree using these new sample weights
+                tree.fit(X_lbs, y_lbs, sample_weight=curr_sample_weight, check_input=False)
+                # Then set the indices of the tree only to the samples that had non-zero weights
+                tree.indices_ = sample_counts > 0.
+            else:
+                # Then get the number of samples
+                n_samples = X.shape[0]
+                # To generate a uniform sample weight
+                curr_sample_weight = np.ones((n_samples,), dtype=np.float64)
+                # Then randomly choses n_samples from all samples with replacement 
+                indices = random_state.randint(0, n_samples, n_samples)
+                # Use this method of bincount to make a randome benning histogram
+                # that will sum up to n_samples
+                sample_counts = bincount(indices, minlength=n_samples)
+                # Apply these randomized counts to the old uniform weights
+                curr_sample_weight *= sample_counts
+                # Fit the tree using these new sample weights
+                tree.fit(X, y, sample_weight=curr_sample_weight, check_input=False)
+                # Then set the indices of the tree only to the samples that had non-zero weights
+                tree.indices_ = sample_counts > 0.
+        # If we aren't bootstraping
+        else:
+            # This just fit the data with no random weights
+            tree.fit(X, y, check_input=False)
+        # Add the grown tree to the container 
+        trees.append(tree)
+    # return all of the trained trees
+    return trees
+
+def predict_forest(forest, X):
+    """Compute predictions from the wisdom of the forest"""
+    # Get the current number of trees asked to use
+    n_trees = forest.n_estimators
+    trees = forest.estimators_[0:n_trees]
+    # Get the count classes
+    n_classes = forest.n_classes_
+    # Get the count outputs
+    n_outputs = forest.n_outputs_    
+    # The number of samples
+    n_samples = X.shape[0]
+    # In the specal case of being trained with ouly one output
+    if n_outputs == 1:
+        # Make a container for predicted proba for each class
+        proba = np.zeros((n_samples, n_classes))
+        # Fore each tree in forest
+        for tree in trees:
+            # Ask the tree for proba
+            proba_tree = tree.predict_proba(X)
+            # If the tree has seen the same number of each class
+            # as the forest has seen
+            if n_classes == tree.n_classes_:
+                # Then tack on the predicted proba
+                proba += proba_tree
+            # If not
+            else:
+                # Then for each class the tree has
+                for j, c in enumerate(tree.classes_):
+                    # Then just tack on the predicted proba for that class                  
+                    proba[:, c] += proba_tree[:, j]
+        # Normilize the proba by the number of trees used
+        proba /= n_trees
+    # If we were trained with multiple outputs
+    else:
+        # Make a container for all outputs
+        proba = []
+        # For each output
+        for k in xrange(n_outputs):
+            # Make a container for predicted proba for each class
+            proba.append(np.zeros((n_samples, n_classes[k])))
+        # Fore each tree in forest
+        for tree in trees:
+            # Ask the tree for proba
+            proba_tree = tree.predict_proba(X)
+            # For each output
+            for k in xrange(n_outputs):
+                # If the tree has seen the same number of each class
+                # as the forest has seen
+                if n_classes[k] == tree.n_classes_[k]:
+                    # Then tack on the predicted proba
+                    proba[k] += proba_tree[k]
+                # If not
+                else:
+                    # Then for each class the tree has
+                    for j, c in enumerate(tree.classes_[k]):
+                        # Then just tack on the predicted proba for that class  
+                        proba[k][:, c] += proba_tree[k][:, j]   
+                # Normilize the proba by the number of trees used
+                proba[k] /= n_trees
+    # Return the resulting proba
+    return proba
